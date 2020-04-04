@@ -542,7 +542,7 @@ int main(void)
     int server_sock = -1;
     u_short port = 4000;
     int client_sock = -1;
-    // sockaddr_in 是 IPV4的套接字地址结构，定义在<netinet/in.h> --《TLPI》P1202
+    // sockaddr_in 是 IPV4的套接字地址结构 --《TLPI》P1202
     struct sockaddr_in client_name;
     socklen_t  client_name_len = sizeof(client_name);
     pthread_t newthread;
