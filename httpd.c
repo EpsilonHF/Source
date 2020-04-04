@@ -61,11 +61,13 @@ void accept_request(void *arg)
     char url[255];
     char path[512];
     size_t i, j;
+    // 包含文件信息的数据--《TLPI》P280
     struct stat st;
     int cgi = 0;      /* becomes true if server decides this is a CGI
                        * program */
     char *query_string = NULL;
 
+    //读 http 请求的第一行数据（request line），把请求方法存进 method 中
     numchars = get_line(client, buf, sizeof(buf));
     i = 0; j = 0;
     while (!ISspace(buf[i]) && (i < sizeof(method) - 1))
@@ -76,18 +78,22 @@ void accept_request(void *arg)
     j=i;
     method[i] = '\0';
 
+    // 如果既不是 GET 也不是 POST，直接发送 response 告诉客户端没实现该方法
     if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
     {
         unimplemented(client);
         return;
     }
 
+    //如果是 POST 方法就，开启 cgi
     if (strcasecmp(method, "POST") == 0)
         cgi = 1;
 
     i = 0;
+    // 跳过空白字符 
     while (ISspace(buf[j]) && (j < numchars))
         j++;
+    // 读取 url
     while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < numchars))
     {
         url[i] = buf[j];
@@ -95,13 +101,17 @@ void accept_request(void *arg)
     }
     url[i] = '\0';
 
+    // 如果是 GET 请求，
     if (strcasecmp(method, "GET") == 0)
     {
         query_string = url;
+        // 检查 url 中是否存在 ？
         while ((*query_string != '?') && (*query_string != '\0'))
             query_string++;
+        // GET请求中，?后面为参数
         if (*query_string == '?')
         {
+            // 开启 cgi
             cgi = 1;
             *query_string = '\0';
             query_string++;
@@ -109,27 +119,34 @@ void accept_request(void *arg)
     }
 
     sprintf(path, "htdocs%s", url);
+    // 如果以 / 结尾，在后面加上 index.html
     if (path[strlen(path) - 1] == '/')
         strcat(path, "index.html");
+    // 根据路径找到对应文件 --《TLPI》P279
     if (stat(path, &st) == -1) {
         while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
             numchars = get_line(client, buf, sizeof(buf));
+        // return 404
         not_found(client);
     }
     else
     {
+        // 如果是个目录，则默认使用该目录下 index.html 文件 --《TLPI》P282
         if ((st.st_mode & S_IFMT) == S_IFDIR)
             strcat(path, "/index.html");
+        // 如果文件有可执行权限，开启 cgi --《TLPI》P295
         if ((st.st_mode & S_IXUSR) ||
                 (st.st_mode & S_IXGRP) ||
-                (st.st_mode & S_IXOTH)    )
+                (st.st_mode & S_IXOTH))
             cgi = 1;
+        // 不是 cgi,直接把服务器文件返回，否则执行 cgi
         if (!cgi)
             serve_file(client, path);
         else
             execute_cgi(client, path, method, query_string);
     }
 
+    // 断开与客户端的连接
     close(client);
 }
 
@@ -211,17 +228,21 @@ void execute_cgi(int client, const char *path,
         const char *method, const char *query_string)
 {
     char buf[1024];
+    // 2个管道
     int cgi_output[2];
     int cgi_input[2];
     pid_t pid;
     int status;
     int i;
     char c;
+    // 读取的字符数
     int numchars = 1;
+    // http 的 content_length
     int content_length = -1;
 
     buf[0] = 'A'; buf[1] = '\0';
     if (strcasecmp(method, "GET") == 0)
+        // 读取并丢弃 http header
         while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
             numchars = get_line(client, buf, sizeof(buf));
     else if (strcasecmp(method, "POST") == 0) /*POST*/
@@ -229,6 +250,9 @@ void execute_cgi(int client, const char *path,
         numchars = get_line(client, buf, sizeof(buf));
         while ((numchars > 0) && strcmp("\n", buf))
         {
+            // 如果是POST请求，就需要得到 Content-Length
+            // Content-Length 字符串长度为15
+            // 从 17 位开始是具体的长度信息
             buf[15] = '\0';
             if (strcasecmp(buf, "Content-Length:") == 0)
                 content_length = atoi(&(buf[16]));
@@ -239,15 +263,13 @@ void execute_cgi(int client, const char *path,
             return;
         }
     }
-    else/*HEAD or other*/
-    {
-    }
-
-
+    
+    // pipe() 建立 output 管道 --《TLPI》P892
     if (pipe(cgi_output) < 0) {
         cannot_execute(client);
         return;
     }
+    // 建立 input 管道
     if (pipe(cgi_input) < 0) {
         cannot_execute(client);
         return;
@@ -259,16 +281,20 @@ void execute_cgi(int client, const char *path,
     }
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
     send(client, buf, strlen(buf), 0);
+    // 子进程用于执行 cgi
     if (pid == 0)  /* child: CGI script */
     {
         char meth_env[255];
         char query_env[255];
         char length_env[255];
-
+        // 将子进程的 stdout 重定向到 cgi_ouput 的管道写端上
+        // 将 stdin 重定向到 cgi_input 管道的读端上，并关闭管道的其他端口
+        // dup2() --《TLPI》P97
         dup2(cgi_output[1], STDOUT);
         dup2(cgi_input[0], STDIN);
         close(cgi_output[0]);
         close(cgi_input[1]);
+        // 设置 cgi 环境变量 putenv() --《TLPI》P128
         sprintf(meth_env, "REQUEST_METHOD=%s", method);
         putenv(meth_env);
         if (strcasecmp(method, "GET") == 0) {
@@ -279,19 +305,26 @@ void execute_cgi(int client, const char *path,
             sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
             putenv(length_env);
         }
+        // 将子进程替换成另一个进程并执行 cgi 脚本
+        // execl() 包含于<unistd.h>中 --《TLPI》P567
         execl(path, NULL);
         exit(0);
     } else {    /* parent */
+        // 父进程关闭 cgi_output 管道的写端和 cgi_input 的读端
         close(cgi_output[1]);
         close(cgi_input[0]);
         if (strcasecmp(method, "POST") == 0)
+            // 根据 content_length 读取客户端的信息
+            // 并通过 cgi_input 传入子进程的标准输入
             for (i = 0; i < content_length; i++) {
                 recv(client, &c, 1, 0);
                 write(cgi_input[1], &c, 1);
             }
+        // 通过 cgi_output，获取子进程的标准输出
+        // 并将其写入到客户端
         while (read(cgi_output[0], &c, 1) > 0)
             send(client, &c, 1, 0);
-
+        // 关闭管道端口，等待子进程结束，退出程序：
         close(cgi_output[0]);
         close(cgi_input[1]);
         waitpid(pid, &status, 0);
@@ -318,13 +351,17 @@ int get_line(int sock, char *buf, int size)
     int n;
 
     while ((i < size - 1) && (c != '\n'))
-    {
+    {   
+        // recv()包含于<sys/socket.h> --《TLPI》P1259, 
+        //读一个字节的数据存放在 c 中
         n = recv(sock, &c, 1, 0);
         /* DEBUG printf("%02X\n", c); */
         if (n > 0)
         {
+            // CLRF 换行检测
             if (c == '\r')
             {
+                // 使下一次读取依然可以得到这次读取的内容
                 n = recv(sock, &c, 1, MSG_PEEK);
                 /* DEBUG printf("%02X\n", c); */
                 if ((n > 0) && (c == '\n'))
@@ -340,7 +377,7 @@ int get_line(int sock, char *buf, int size)
     }
     buf[i] = '\0';
 
-    return(i);
+    return i;
 }
 
 /**********************************************************************/
@@ -352,7 +389,8 @@ void headers(int client, const char *filename)
 {
     char buf[1024];
     (void)filename;  /* could use filename to determine file type */
-
+    
+    // 将 header 信息写入 client
     strcpy(buf, "HTTP/1.0 200 OK\r\n");
     send(client, buf, strlen(buf), 0);
     strcpy(buf, SERVER_STRING);
@@ -409,10 +447,13 @@ void serve_file(int client, const char *filename)
 
     resource = fopen(filename, "r");
     if (resource == NULL)
+        // 返回 404
         not_found(client);
-    else
+    else 
     {
+        // 将 header 写入 client
         headers(client, filename);
+        // 将文件内容写入 client
         cat(client, resource);
     }
     fclose(resource);
@@ -432,29 +473,39 @@ int startup(u_short *port)
     int on = 1;
     struct sockaddr_in name;
 
+    // 创建套接字(因特网地址族、流套接字和默认协议)
     httpd = socket(PF_INET, SOCK_STREAM, 0);
     if (httpd == -1)
         error_die("socket");
+    // 初始化结构体
     memset(&name, 0, sizeof(name));
     name.sin_family = AF_INET;
     name.sin_port = htons(*port);
+    // INADDR_ANY是一个 IPV4通配地址的常量，包含于<netinet/in.h>
+    // 大多实现都将其定义成了 0.0.0.0 --《TLPI》P1187
     name.sin_addr.s_addr = htonl(INADDR_ANY);
+    // 允许重用本地地址和端口
     if ((setsockopt(httpd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on))) < 0)  
     {  
         error_die("setsockopt failed");
     }
+    //bind()用于绑定地址与 socket --《TLPI》P1153
+    //如果传进去的sockaddr结构中的 sin_port 指定为0，这时系统会选择一个临时的端口号
     if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
         error_die("bind");
-    if (*port == 0)  /* if dynamically allocating a port */
+    //如果调用 bind 后端口号仍然是0，则手动调用 getsockname() 获取端口号
+    if (*port == 0)
     {
         socklen_t namelen = sizeof(name);
+        // 调用 getsockname()获取系统给 httpd 随机分配的端口号 --《TLPI》P1263
         if (getsockname(httpd, (struct sockaddr *)&name, &namelen) == -1)
             error_die("getsockname");
         *port = ntohs(name.sin_port);
     }
+    // 让 httpd 监听 request --《TLPI》P1156
     if (listen(httpd, 5) < 0)
         error_die("listen");
-    return(httpd);
+    return httpd;
 }
 
 /**********************************************************************/
@@ -491,6 +542,7 @@ int main(void)
     int server_sock = -1;
     u_short port = 4000;
     int client_sock = -1;
+    // sockaddr_in 是 IPV4的套接字地址结构，定义在<netinet/in.h> --《TLPI》P1202
     struct sockaddr_in client_name;
     socklen_t  client_name_len = sizeof(client_name);
     pthread_t newthread;
@@ -500,6 +552,7 @@ int main(void)
 
     while (1)
     {
+        // 阻塞等待客户端的连接 --《TLPI》P1157
         client_sock = accept(server_sock,
                 (struct sockaddr *)&client_name,
                 &client_name_len);
@@ -512,5 +565,5 @@ int main(void)
 
     close(server_sock);
 
-    return(0);
+    return 0;
 }
