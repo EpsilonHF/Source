@@ -1,3 +1,8 @@
-httpd.dSYM/*
-httpd
-client
+Tinyhttpd/httpd.dSYM/*
+Tinyhttpd/httpd
+Tinyhttpd/client
+*.DS_Store*
+.vscode/settings.json
+.idea/*
+
+
